@@ -6,6 +6,7 @@ Only salted SHA-256 hashes ever leave this PC — plain codes live only in the
 private registry file beta_codes.json (same folder, NEVER commit/publish it).
 
 Typical workflow (all from this folder):
+    python gen_beta_code.py                 # interactive panel (numbered menu)
     python gen_beta_code.py --issue Alice        # new code for Alice, logged in beta_codes.txt
     python gen_beta_code.py --export             # sync .js allowlist + URLs + beta_auth.json + txt
     # re-obfuscate source -> obfuscated build, then:
@@ -23,6 +24,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import os
 import re
 import secrets
 import sys
@@ -332,6 +334,346 @@ def cmd_quick(args) -> int:
     return 0
 
 
+# ============================== interactive panel ==============================
+# Numbered menu (runs when the script is started with no arguments). Every
+# option below reuses the cmd_* backends above, so flags and menu can never
+# drift apart. Plain codes are only ever printed at create/verify time.
+
+USE_COLOR = True
+
+_FONT = {
+    "A": ["  #  ", " # # ", "#####", "#   #", "#   #"],
+    "B": ["#### ", "#   #", "#### ", "#   #", "#### "],
+    "C": [" ####", "#    ", "#    ", "#    ", " ####"],
+    "D": ["#### ", "#   #", "#   #", "#   #", "#### "],
+    "E": ["#####", "#    ", "#### ", "#    ", "#####"],
+    "G": [" ####", "#    ", "# ###", "#   #", " ### "],
+    "H": ["#   #", "#   #", "#####", "#   #", "#   #"],
+    "M": ["#   #", "## ##", "# # #", "#   #", "#   #"],
+    "N": ["#   #", "##  #", "# # #", "#  ##", "#   #"],
+    "O": [" ### ", "#   #", "#   #", "#   #", " ### "],
+    "R": ["#### ", "#   #", "#### ", "#  # ", "#   #"],
+    "T": ["#####", "  #  ", "  #  ", "  #  ", "  #  "],
+    "U": ["#   #", "#   #", "#   #", "#   #", " ### "],
+    " ": ["     ", "     ", "     ", "     ", "     "],
+}
+
+
+def _fig(word: str):
+    rows = [""] * 5
+    for ch in word.upper():
+        g = _FONT.get(ch, _FONT[" "])
+        for i in range(5):
+            rows[i] += g[i] + "  "
+    return [r.rstrip() for r in rows]
+
+
+def _paint(s: str) -> str:
+    if USE_COLOR:
+        return "\033[95m" + s + "\033[0m"
+    return s
+
+
+def print_banner() -> None:
+    lines = _fig("GEN") + [""] + _fig("MURTHER") + [""] + _fig("BETA CODE")
+    width = max(len(r) for r in lines)
+    bar = "=" * (width + 4)
+    print(_paint(bar))
+    for r in lines:
+        print(_paint("  " + r.ljust(width)))
+    print(_paint(bar))
+    print("  Murther BETA authentication manager")
+    print()
+
+
+def _pause() -> None:
+    try:
+        input("Press Enter to continue... ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+
+def _ns(**kw):
+    from argparse import Namespace
+    base = dict(issue="", revoke="", unrevoke="", list=False, show_codes=False,
+                export=False, sync_urls=False, bump_version="", min_version="",
+                count=0, salt="", verify="", expect="")
+    base.update(kw)
+    return Namespace(**base)
+
+
+def _pick(entries, what: str):
+    """Numbered picker over registry entries. Returns the entry or None."""
+    if not entries:
+        print(f"(no {what} entries)")
+        return None
+    for i, e in enumerate(entries, 1):
+        state = "REVOKED" if e.get("revoked") else "active "
+        print(f"  {i}. [{state}] {e.get('name', '?')}  hash={e.get('hash', '')[:12]}...")
+    print("   0. Cancel")
+    try:
+        raw = input(f"Pick a {what[:-1]} (number, name, code or hash): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if raw == "0" or not raw:
+        return None
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(entries):
+            return entries[idx]
+        print("Out of range — cancelled.")
+        return None
+    e = find_entry({"codes": entries}, raw)
+    if e is None:
+        print(f"no entry matches {raw!r} — cancelled.")
+    return e
+
+
+def _confirm(msg: str) -> bool:
+    try:
+        return input(msg + " (y/n): ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def menu_create() -> None:
+    print_banner()
+    print("--- 1. Create a code ---\n")
+    try:
+        name = input("Enter user name linked to the code: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not name:
+        print("Name must not be empty — cancelled.")
+        _pause()
+        return
+    rc = cmd_issue(_ns(issue=name))
+    _pause()
+    return rc
+
+
+def menu_revoke(undo: bool = False) -> None:
+    print_banner()
+    print(f"--- {'3. Restore access' if undo else '2. Revoke someone'} ---\n")
+    reg = load_registry()
+    pool = sorted([e for e in reg["codes"] if bool(e.get("revoked")) == undo],
+                  key=lambda e: e.get("name", "").lower())
+    e = _pick(pool, "revoked" if undo else "active")
+    if e is None:
+        return
+    if not _confirm(f"{'Restore' if undo else 'REVOKE'} {e['name']}?"):
+        print("Cancelled.")
+        return
+    cmd_revoke(_ns(**({"unrevoke": e["name"]} if undo else {"revoke": e["name"]})), undo=undo)
+    _pause()
+
+
+def menu_list() -> None:
+    print_banner()
+    print("--- 4. List codes ---\n")
+    cmd_list(_ns())
+    print()
+    if _confirm("Reveal plain codes?"):
+        print()
+        cmd_list(_ns(show_codes=True))
+    _pause()
+
+
+def menu_export() -> None:
+    print_banner()
+    print("--- 5. Export + publish ---\n")
+    rc = cmd_export(_ns())
+    if rc == 0:
+        print()
+        print("Publish checklist:")
+        print("  1. Re-obfuscate: node tools/obfuscate-beta.cjs  (from repo root)")
+        print("  2. git add murther.user.beta.obfuscated.js beta_auth.json")
+        print("  3. git commit + push")
+        print("  (Revocation goes live once beta_auth.json is pushed.)")
+    _pause()
+
+
+def menu_verify() -> None:
+    print_banner()
+    print("--- 6. Verify a code ---\n")
+    try:
+        code = input("Enter the 6-digit code: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    reg = load_registry()
+    if not reg.get("salt"):
+        print("Registry has no salt yet — issue a code first.")
+        _pause()
+        return
+    try:
+        h = digest(reg["salt"], code)
+    except ValueError as ex:
+        print(ex)
+        _pause()
+        return
+    hit = next((e for e in reg["codes"] if e.get("hash") == h), None)
+    if hit and not hit.get("revoked"):
+        print(f"MATCH — active code for {hit['name']}.")
+    elif hit:
+        print(f"Code belongs to {hit['name']}, but it is REVOKED.")
+    else:
+        print("NO MATCH — unknown code.")
+    _pause()
+
+
+def menu_bump() -> None:
+    print_banner()
+    print("--- 7. Version bump ---\n")
+    try:
+        ver = input("New version (X.Y.Z): ").strip()
+        minimum = input("Min allowed version [skip]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not re.fullmatch(r"[0-9][\w.\-]*", ver):
+        print("Bad version — cancelled.")
+        _pause()
+        return
+    cmd_bump(_ns(bump_version=ver, min_version=minimum))
+    print("Remember: --export, re-obfuscate, commit + push.")
+    _pause()
+
+
+def menu_reissue() -> None:
+    print_banner()
+    print("--- 8. Re-issue (rotate) a code ---\n")
+    reg = load_registry()
+    pool = sorted([e for e in reg["codes"] if not e.get("revoked")],
+                  key=lambda e: e.get("name", "").lower())
+    e = _pick(pool, "active")
+    if e is None:
+        return
+    if not _confirm(f"Rotate {e['name']}'s code? (old code dies, new code issued)"):
+        print("Cancelled.")
+        return
+    salt = reg.get("salt") or new_salt()
+    reg["salt"] = salt
+    existing = {x.get("code", "") for x in reg["codes"]}
+    code = new_code(existing)
+    e["revoked"] = True
+    e["revoked_at"] = utcnow()
+    reg["codes"].append({"name": e["name"], "code": code,
+                         "hash": digest(salt, code), "revoked": False,
+                         "issued_at": utcnow(), "revoked_at": ""})
+    save_registry(reg)
+    write_codes_txt(reg)
+    print(f"New code for {e['name']} (send privately): {code}")
+    print("Next: option 5 (export) -> re-obfuscate -> commit + push")
+    _pause()
+
+
+def menu_delete() -> None:
+    print_banner()
+    print("--- 9. Delete an entry (permanent) ---\n")
+    reg = load_registry()
+    pool = sorted(reg["codes"], key=lambda e: e.get("name", "").lower())
+    e = _pick(pool, "all")
+    if e is None:
+        return
+    try:
+        typed = input(f"Type the name {e['name']!r} to confirm deletion: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if typed.lower() != e["name"].lower():
+        print("Name mismatch — cancelled.")
+        return
+    reg["codes"] = [x for x in reg["codes"] if x is not e]
+    save_registry(reg)
+    write_codes_txt(reg)
+    print(f"Deleted {e['name']} from the registry.")
+    print("Next: option 5 (export) -> re-obfuscate -> commit + push")
+    _pause()
+
+
+def menu_status() -> None:
+    print_banner()
+    print("--- 10. Status ---\n")
+    reg = load_registry()
+    active = [e for e in reg["codes"] if not e.get("revoked")]
+    revoked = [e for e in reg["codes"] if e.get("revoked")]
+    print(f"Registry : {len(active)} active, {len(revoked)} revoked")
+    print(f"Salt     : {(reg.get('salt') or '')[:12]}... ({len(reg.get('salt') or '')} chars)")
+    print(f"Min ver  : {reg.get('min_version', '0.0.1')}")
+    try:
+        src = JS_FILE.read_text(encoding="utf-8")
+        m = re.search(r'var BETA_SALT = "(.*?)";', src)
+        n_hash = len(re.findall(r'"[0-9a-f]{64}",', src.split("var BETA_HASHES")[1].split("];")[0])) \
+            if "var BETA_HASHES" in src else -1
+        print(f"Source .js: salt {'MATCHES' if m and m.group(1) == reg.get('salt') else 'OUT OF SYNC'}"
+              f", {n_hash} embedded hash(es) vs {len(active)} active")
+    except Exception as ex:
+        print(f"Source .js: unreadable ({ex})")
+    try:
+        auth = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        print(f"beta_auth.json: {auth.get('count_active')} active, "
+              f"{len(auth.get('revoked', []))} revoked, updated {auth.get('updated_at', '?')}")
+    except Exception as ex:
+        print(f"beta_auth.json: unreadable ({ex})")
+    _pause()
+
+
+MENU = [
+    ("1", "Create a code", menu_create),
+    ("2", "Revoke someone", lambda: menu_revoke(False)),
+    ("3", "Restore access (unrevoke)", lambda: menu_revoke(True)),
+    ("4", "List codes", menu_list),
+    ("5", "Export + publish checklist", menu_export),
+    ("6", "Verify a code", menu_verify),
+    ("7", "Version bump", menu_bump),
+    ("8", "Re-issue (rotate) a code", menu_reissue),
+    ("9", "Delete an entry (permanent)", menu_delete),
+    ("10", "Status", menu_status),
+]
+
+
+def cmd_menu(args) -> int:
+    global USE_COLOR
+    if getattr(args, "no_color", False) or not sys.stdin.isatty():
+        USE_COLOR = False
+    while True:
+        if sys.stdin.isatty():
+            try:
+                os.system("cls" if os.name == "nt" else "clear")
+            except Exception:
+                pass
+        print_banner()
+        for key, label, _fn in MENU:
+            print(f"  {key:>2}. {label}")
+        print("   0. Quit")
+        try:
+            choice = input("\nType a number: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if choice in ("0", "q", "quit", "exit"):
+            print("Bye.")
+            return 0
+        hit = next((fn for key, _label, fn in MENU if key == choice), None)
+        if hit is None:
+            print(f"{choice!r} is not an option — type a number 0-10.")
+            _pause()
+            continue
+        try:
+            hit()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        except Exception as ex:
+            print(f"Error: {ex}", file=sys.stderr)
+            _pause()
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Murther BETA auth manager (issue / revoke / export)")
     ap.add_argument("--issue", metavar="NAME", default="", help="issue a unique code to NAME")
@@ -347,7 +689,12 @@ def main() -> int:
     ap.add_argument("--salt", default="", help="override registry salt")
     ap.add_argument("--verify", default="", help="verify a 6-digit code against --salt + --expect")
     ap.add_argument("--expect", default="", help="expected hash for --verify")
+    ap.add_argument("--menu", action="store_true", help="open the interactive numbered panel")
+    ap.add_argument("--no-color", action="store_true", help="plain ASCII banner (no ANSI colors)")
     args = ap.parse_args()
+
+    if len(sys.argv) == 1 or args.menu:
+        return cmd_menu(args)
 
     if args.verify:
         if not args.salt or not args.expect:
