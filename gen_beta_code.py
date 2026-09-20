@@ -2,7 +2,7 @@
 """Murther BETA authentication manager: issue, revoke, export.
 
 One unique 6-digit code per person (000000-999999, leading zeros allowed).
-Only salted SHA-256 hashes ever leave this PC — plain codes live only in the
+Only salted SHA-256 hashes ever leave this PC - plain codes live only in the
 private registry file beta_codes.json (same folder, NEVER commit/publish it).
 
 Typical workflow (all from this folder):
@@ -24,18 +24,20 @@ import argparse
 import datetime
 import hashlib
 import json
-import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REGISTRY = HERE / "beta_codes.json"   # PRIVATE — your PC only, gitignored
-CODES_TXT = HERE / "beta_codes.txt"   # PRIVATE — plain codes, gitignored
+REGISTRY = HERE / "beta_codes.json"   # PRIVATE - your PC only, gitignored
+CODES_TXT = HERE / "beta_codes.txt"   # PRIVATE - plain codes, gitignored
 JS_FILE = HERE / "murther.user.beta.js"          # readable source (local only)
 OBF_FILE = HERE / "murther.user.beta.obfuscated.js"  # published build (public)
-AUTH_FILE = HERE / "beta_auth.json"   # PUBLIC — commit this (hashes only)
+AUTH_FILE = HERE / "beta_auth.json"   # PUBLIC - commit this (hashes only)
 SALT_BYTES = 32  # 256-bit salt, hex-encoded (64 chars)
 
 # Single source of truth for the published URLs. Both the source and the
@@ -123,8 +125,8 @@ def write_codes_txt(reg: dict) -> None:
     active = sorted((e for e in reg["codes"] if not e.get("revoked")),
                     key=lambda e: e.get("name", "").lower())
     with open(CODES_TXT, "w", encoding="utf-8") as f:
-        f.write("# Murther BETA codes — PRIVATE. Do NOT share, commit or publish.\n")
-        f.write(f"# Updated {utcnow()} — {len(active)} active code(s)."
+        f.write("# Murther BETA codes - PRIVATE. Do NOT share, commit or publish.\n")
+        f.write(f"# Updated {utcnow()} - {len(active)} active code(s)."
                 " Revoked codes are NOT listed here.\n")
         for e in active:
             f.write(f"{e['name']}: {e['code']}\n")
@@ -138,7 +140,7 @@ def cmd_issue(args) -> int:
         print("name must not be empty", file=sys.stderr)
         return 2
     if find_entry(reg, name) is not None:
-        print(f"{name!r} already exists — use --revoke first to replace.", file=sys.stderr)
+        print(f"{name!r} already exists - use --revoke first to replace.", file=sys.stderr)
         return 2
     existing = {e.get("code", "") for e in reg["codes"]}
     code = new_code(existing)
@@ -174,7 +176,7 @@ def cmd_revoke(args, undo: bool) -> int:
 def cmd_list(args) -> int:
     reg = load_registry()
     if not reg["codes"]:
-        print("(registry empty — use --issue <name>)")
+        print("(registry empty - use --issue <name>)")
         return 0
     for e in reg["codes"]:
         state = "REVOKED" if e.get("revoked") else "active "
@@ -196,7 +198,7 @@ def sync_js(salt: str, active_hashes: list) -> None:
     pat = re.compile(r'  var BETA_SALT = ".*?";\n  var BETA_HASHES = \[(?:[^\]]*?)\];', re.DOTALL)
     new_src, n = pat.subn(block, src, count=1)
     if n != 1:
-        print("ERROR: BETA_SALT/BETA_HASHES block not found in .js — aborting.", file=sys.stderr)
+        print("ERROR: BETA_SALT/BETA_HASHES block not found in .js - aborting.", file=sys.stderr)
         sys.exit(1)
     JS_FILE.write_text(new_src, encoding="utf-8")
 
@@ -206,7 +208,7 @@ def sync_urls() -> None:
 
     Only the plain-text ==UserScript== header is touched (Tampermonkey requires
     it readable anyway), so this is safe on the obfuscated file. The obfuscated
-    BODY keeps whatever BETA_AUTH_URL was baked in at obfuscation time — that
+    BODY keeps whatever BETA_AUTH_URL was baked in at obfuscation time - that
     one comes from the source, so re-obfuscate after source changes.
     Returns (source_ok, obf_ok).
     """
@@ -219,13 +221,13 @@ def sync_urls() -> None:
         src = path.read_text(encoding="utf-8")
         head_end = src.find("==/UserScript==")
         if head_end < 0:
-            print(f"ERROR: userscript header not found in {path.name} — skipped.", file=sys.stderr)
+            print(f"ERROR: userscript header not found in {path.name} - skipped.", file=sys.stderr)
             continue
         head, tail = src[:head_end], src[head_end:]
         head2, n1 = re.subn(r"(// @updateURL\s+)\S+", r"\g<1>" + url, head, count=1)
         head2, n2 = re.subn(r"(// @downloadURL\s+)\S+", r"\g<1>" + url, head2, count=1)
         if n1 != 1 or n2 != 1:
-            print(f"ERROR: @updateURL/@downloadURL lines not found in {path.name} — skipped.",
+            print(f"ERROR: @updateURL/@downloadURL lines not found in {path.name} - skipped.",
                   file=sys.stderr)
             continue
         out = head2 + tail
@@ -233,7 +235,7 @@ def sync_urls() -> None:
             out2, na = re.subn(r'var BETA_AUTH_URL = ".*?";',
                                f'var BETA_AUTH_URL = "{auth_url()}";', out, count=1)
             if na != 1:
-                print(f"ERROR: BETA_AUTH_URL not found in {path.name} — skipped.", file=sys.stderr)
+                print(f"ERROR: BETA_AUTH_URL not found in {path.name} - skipped.", file=sys.stderr)
                 continue
             out = out2
         path.write_text(out, encoding="utf-8")
@@ -261,7 +263,7 @@ def cmd_export(args) -> int:
         reg["salt"] = args.salt.strip().lower()
         save_registry(reg)
     if not reg.get("salt"):
-        print("registry has no salt yet — use --issue first.", file=sys.stderr)
+        print("registry has no salt yet - use --issue first.", file=sys.stderr)
         return 2
     if args.min_version:
         reg["min_version"] = args.min_version.strip()
@@ -301,7 +303,7 @@ def cmd_bump(args) -> int:
     if OBF_FILE.exists():
         ok = bump_version_in(OBF_FILE, ver) and ok
     else:
-        print("note: obfuscated build not found — bumped source only; re-obfuscate to carry it over.")
+        print("note: obfuscated build not found - bumped source only; re-obfuscate to carry it over.")
     if not ok:
         return 1
     if args.min_version:
@@ -321,7 +323,7 @@ def cmd_quick(args) -> int:
         c = new_code(seen)
         seen.add(c)
         codes.append(c)
-    print("=== KEEP PRIVATE (not in registry — prefer --issue) ===")
+    print("=== KEEP PRIVATE (not in registry - prefer --issue) ===")
     for c in codes:
         print(c)
     print()
@@ -422,11 +424,11 @@ def _pick(entries, what: str):
         idx = int(raw) - 1
         if 0 <= idx < len(entries):
             return entries[idx]
-        print("Out of range — cancelled.")
+        print("Out of range - cancelled.")
         return None
     e = find_entry({"codes": entries}, raw)
     if e is None:
-        print(f"no entry matches {raw!r} — cancelled.")
+        print(f"no entry matches {raw!r} - cancelled.")
     return e
 
 
@@ -447,7 +449,7 @@ def menu_create() -> None:
         print()
         return
     if not name:
-        print("Name must not be empty — cancelled.")
+        print("Name must not be empty - cancelled.")
         _pause()
         return
     rc = cmd_issue(_ns(issue=name))
@@ -498,30 +500,14 @@ def menu_export() -> None:
 
 def menu_verify() -> None:
     print_banner()
-    print("--- 6. Verify a code ---\n")
+    print("--- 6. Verify a code (in BOTH builds) ---\n")
     try:
         code = input("Enter the 6-digit code: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return
-    reg = load_registry()
-    if not reg.get("salt"):
-        print("Registry has no salt yet — issue a code first.")
-        _pause()
-        return
-    try:
-        h = digest(reg["salt"], code)
-    except ValueError as ex:
-        print(ex)
-        _pause()
-        return
-    hit = next((e for e in reg["codes"] if e.get("hash") == h), None)
-    if hit and not hit.get("revoked"):
-        print(f"MATCH — active code for {hit['name']}.")
-    elif hit:
-        print(f"Code belongs to {hit['name']}, but it is REVOKED.")
-    else:
-        print("NO MATCH — unknown code.")
+    print()
+    check_code_in_files(code)
     _pause()
 
 
@@ -535,7 +521,7 @@ def menu_bump() -> None:
         print()
         return
     if not re.fullmatch(r"[0-9][\w.\-]*", ver):
-        print("Bad version — cancelled.")
+        print("Bad version - cancelled.")
         _pause()
         return
     cmd_bump(_ns(bump_version=ver, min_version=minimum))
@@ -585,7 +571,7 @@ def menu_delete() -> None:
         print()
         return
     if typed.lower() != e["name"].lower():
-        print("Name mismatch — cancelled.")
+        print("Name mismatch - cancelled.")
         return
     reg["codes"] = [x for x in reg["codes"] if x is not e]
     save_registry(reg)
@@ -660,7 +646,7 @@ def cmd_menu(args) -> int:
             return 0
         hit = next((fn for key, _label, fn in MENU if key == choice), None)
         if hit is None:
-            print(f"{choice!r} is not an option — type a number 0-10.")
+            print(f"{choice!r} is not an option - type a number 0-10.")
             _pause()
             continue
         try:
@@ -671,6 +657,263 @@ def cmd_menu(args) -> int:
         except Exception as ex:
             print(f"Error: {ex}", file=sys.stderr)
             _pause()
+    return 0
+
+
+def _match_pair(text: str, start: int, open_c: str, close_c: str) -> int:
+    """Index of the bracket matching text[start] (which must be open_c).
+
+    Skips '...', "...", `...`, //... and /*...*/ so code inside strings or
+    comments cannot unbalance the count. Returns -1 on failure.
+    """
+    i, depth, n = start, 0, len(text)
+    quote = None
+    while i < n:
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in ("'", '"', "`"):
+            quote = c
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        elif c == open_c:
+            depth += 1
+        elif c == close_c:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _decode_obf_strings(path: Path):
+    """Decode a javascript-obfuscator base64 string table by reusing the
+    build's OWN decoder + shuffle in Node (pure JS, no DOM touched).
+
+    Returns the decoded string list, or None when the build uses an
+    unsupported layout (rc4 keys, split strings, ...) - never raises.
+    """
+    if shutil.which("node") is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    try:
+        # 1. string-table function: function _0xT(){var _0xA=[...]; ... return _0xT();}
+        mT = re.search(r"function (_0x\w+)\(\)\{var (_0x\w+)=\[(.*?)\];\1=function\(\)\{return \2;\};return \1\(\);}",
+                       text, re.DOTALL)
+        if not mT:
+            return None
+        tname = mT.group(1)
+        # 2. decoder: the next 2-arg function containing the base64 alphabet.
+        mD = re.search(r"function (_0x\w+)\(_0x\w+,_0x\w+\)\{", text[mT.end():])
+        if not mD:
+            return None
+        dname = mD.group(1)
+        dstart = mT.end() + mD.start()
+        dbrace = text.find("{", dstart)
+        dend = _match_pair(text, dbrace, "{", "}")
+        if dend < 0:
+            return None
+        decoder_src = text[dstart:dend + 1]
+        if "decodeURIComponent" not in decoder_src:
+            return None  # not the base64 variant (probably rc4) - unsupported
+        m_off = re.search(r"-\s*(0x[0-9a-fA-F]+)", decoder_src)
+        if not m_off:
+            return None
+        offset = int(m_off.group(1), 16)
+        # 3. shuffle IIFE right after the decoder: (function(a,b){...})(_0xT,0x..)
+        rest = text[dend + 1:]
+        mS = re.search(r"\(function\(_0x\w+,_0x\w+\)\{", rest)
+        send = -1
+        if mS:
+            sbrace = rest.find("{", mS.start())
+            # paren-match from the opening '(' of the IIFE
+            send_rel = _match_pair(rest, mS.start(), "(", ")")
+            if send_rel > 0 and re.match(r"\(%s,0x[0-9a-fA-F]+\)" % re.escape(tname),
+                                         rest[send_rel:send_rel + len(tname) + 24]):
+                send = dend + 1 + send_rel + len(re.match(r"\(%s,0x[0-9a-fA-F]+\)" % re.escape(tname),
+                                                          rest[send_rel:]).group(0))
+        prefix_end = send if send > 0 else dend + 1
+        prefix = text[mT.start():prefix_end]
+        table_len = len(re.findall(r"'[^']*'", mT.group(3)))
+        if table_len < 16:
+            return None
+        harness = (
+            "const vm=require('vm'),fs=require('fs');\n"
+            "const machFile=process.argv[2],tName=process.argv[3],"
+            "dName=process.argv[4];\n"
+            "const off=parseInt(process.argv[5],10),"
+            "total=parseInt(process.argv[6],10);\n"
+            "const mach=fs.readFileSync(machFile,'utf8');\n"
+            "const ctx={};\n"
+            "vm.createContext(ctx);\n"
+            "vm.runInContext(mach,ctx,{timeout:15000});\n"
+            "const out=[];\n"
+            "for(let k=0;k<total;k++){\n"
+            "  try{const s=vm.runInContext(dName+'('+(off+k)+')',ctx);\n"
+            "    out.push(typeof s==='string'?s:null);}catch(e){out.push(null);}\n"
+            "}\n"
+            "console.log(JSON.stringify({n:total,strings:out}));\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            mach = Path(tmp) / "mach.js"
+            drv = Path(tmp) / "drv.js"
+            mach.write_text(prefix, encoding="utf-8")
+            drv.write_text(harness, encoding="utf-8")
+            # NOTE: bytes mode + utf-8/replace on purpose — decoded strings
+            # can hold bytes the Windows console codec cannot represent.
+            r = subprocess.run(["node", str(drv), str(mach), tname, dname,
+                                str(offset), str(table_len)],
+                               capture_output=True, timeout=120)
+        if r.returncode != 0:
+            return None
+        out_txt = r.stdout.decode("utf-8", "replace")
+        payload = json.loads(out_txt.strip().splitlines()[-1])
+        strings = payload.get("strings") or []
+        good = [s for s in strings if isinstance(s, str) and s]
+        if len(good) < table_len * 0.2:
+            return None  # decoded garbage - wrong decoder variant
+        return strings
+    except Exception:
+        return None
+
+
+def _source_candidates(path: Path):
+    """(salt, [hashes], version) parsed from the readable source build."""
+    try:
+        src = path.read_text(encoding="utf-8")
+    except Exception:
+        return "", [], ""
+    m = re.search(r'var BETA_SALT = "([^"]*)";', src)
+    block = re.search(r"var BETA_HASHES = \[(.*?)\];", src, re.DOTALL)
+    hashes = re.findall(r'"([0-9a-f]{64})"', block.group(1)) if block else []
+    v = re.search(r"// @version\s+([0-9][\w.\-]*)", src)
+    return (m.group(1) if m else ""), hashes, (v.group(1) if v else "")
+
+
+def _prove(code: str, candidates) -> str:
+    """Hex salt proving `code`, i.e. sha256(salt + code) is also embedded."""
+    hexes = {s for s in candidates if isinstance(s, str) and re.fullmatch(r"[0-9a-f]{64}", s)}
+    for s in hexes:
+        try:
+            if digest(s, code) in hexes:
+                return s
+        except ValueError:
+            return ""
+    return ""
+
+
+def _header_version(path: Path) -> str:
+    try:
+        head = path.read_text(encoding="utf-8")[:4000]
+    except Exception:
+        return ""
+    m = re.search(r"// @version\s+([0-9][\w.\-]*)", head)
+    return m.group(1) if m else ""
+
+
+def check_code_in_files(code: str):
+    """Per-file verdicts for a 6-digit code. Prints a table, returns exit code.
+
+    For each build (source + obfuscated): WORKS / FAIL / UNREADABLE, with the
+    reason. WORKS additionally requires the hash to be absent from the live
+    revocation list (beta_auth.json), mirroring the gate's runtime check.
+    """
+    code = (code or "").strip()
+    if not re.fullmatch(r"[0-9]{6}", code):
+        print("Code must be exactly 6 digits.", file=sys.stderr)
+        return 2
+    reg = load_registry()
+    hit = next((e for e in reg.get("codes", []) if e.get("code") == code), None)
+    if hit and not hit.get("revoked"):
+        print(f"Registry: {code} belongs to {hit['name']} (active).")
+    elif hit:
+        print(f"Registry: {code} belongs to {hit['name']}, but it is REVOKED.")
+    else:
+        print(f"Registry: {code} is unknown (not issued here).")
+    try:
+        auth = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        revoked_live = {str(x).lower() for x in (auth.get("revoked") or [])}
+    except Exception:
+        revoked_live = set()
+        print("Note: beta_auth.json unreadable - revocation state unknown.")
+    # Revocation is decided from registry + live list (mirrors the gate), even
+    # when --export already removed the hash from the builds (also blocked).
+    try:
+        h_reg = digest(reg.get("salt") or "x", code) if reg.get("salt") else ""
+    except ValueError:
+        h_reg = ""
+    is_revoked = bool(h_reg) and (
+        h_reg in revoked_live
+        or any(e.get("hash") == h_reg and e.get("revoked") for e in reg.get("codes", [])))
+    rows = []
+    # --- readable source build: exact proof ---
+    if JS_FILE.exists():
+        salt, hashes, ver = _source_candidates(JS_FILE)
+        proof = _prove(code, ([salt] if salt else []) + hashes)
+        if proof and not is_revoked:
+            rows.append((JS_FILE.name, "WORKS",
+                         f"salt {proof[:12]}..., {len(hashes)} hash(es) embedded"))
+        elif is_revoked:
+            rows.append((JS_FILE.name, "REVOKED",
+                         "code is revoked - blocked at runtime"
+                         + ("; hash still embedded" if proof else "; hash already removed by --export")))
+        elif salt.startswith("CHANGE_ME") or not hashes:
+            rows.append((JS_FILE.name, "FAIL",
+                         "source has no auth config yet (placeholder salt / empty hashes) - run --export"))
+        else:
+            rows.append((JS_FILE.name, "FAIL",
+                         f"salt {salt[:12]}... carries {len(hashes)} hash(es) but not this code"
+                         " - stale source? re-issue/--export, or wrong code"))
+    else:
+        rows.append((JS_FILE.name, "SKIP", "file not found"))
+    # --- obfuscated build: runtime-decoded table + raw literals, then prove ---
+    if OBF_FILE.exists():
+        ver = _header_version(OBF_FILE)
+        try:
+            raw = OBF_FILE.read_text(encoding="utf-8")
+        except Exception:
+            raw = ""
+        raw_hex = re.findall(r"[0-9a-f]{64}", raw)
+        decoded = _decode_obf_strings(OBF_FILE)  # list, or None if unsupported
+        cands = list(decoded or []) + raw_hex
+        proof = _prove(code, cands)
+        if proof and not is_revoked:
+            how = ("decoded table" if decoded and proof in set(decoded) else "embedded literals")
+            rows.append((OBF_FILE.name, "WORKS",
+                         f"{how} prove it (salt {proof[:12]}...)"))
+        elif is_revoked:
+            rows.append((OBF_FILE.name, "REVOKED",
+                         "code is revoked - blocked at runtime"
+                         + ("; hash still embedded" if proof else "; hash already removed by --export")))
+        elif decoded is not None or raw_hex:
+            rows.append((OBF_FILE.name, "FAIL",
+                         "build carries an auth config but not this code - stale build?"
+                         " Re-obfuscate after --export, or wrong code."))
+        else:
+            src_ver = _header_version(JS_FILE)
+            hint = (f"versions: build {ver or '?'} vs source {src_ver or '?'}"
+                    + (" - MATCH" if ver and ver == src_ver else " - MISMATCH, rebuild first"))
+            rows.append((OBF_FILE.name, "UNREADABLE",
+                         f"no usable strings found ({hint})."
+                         " Re-obfuscate from the exported source, then re-run this check."))
+    else:
+        rows.append((OBF_FILE.name, "SKIP", "file not found"))
+    print()
+    for fname, status, detail in rows:
+        print(f"{fname}\n  -> {status}: {detail}")
     return 0
 
 
@@ -687,8 +930,10 @@ def main() -> int:
     ap.add_argument("--min-version", default="", help="with --export/--bump-version: oldest client allowed")
     ap.add_argument("--count", type=int, default=0, help="legacy quick-generate N codes (no registry)")
     ap.add_argument("--salt", default="", help="override registry salt")
-    ap.add_argument("--verify", default="", help="verify a 6-digit code against --salt + --expect")
-    ap.add_argument("--expect", default="", help="expected hash for --verify")
+    ap.add_argument("--verify", metavar="CODE", default="",
+                    help="check a 6-digit code against BOTH builds (source + obfuscated)."
+                         " Add --salt + --expect for legacy single-hash mode.")
+    ap.add_argument("--expect", default="", help="expected hash for legacy --verify mode")
     ap.add_argument("--menu", action="store_true", help="open the interactive numbered panel")
     ap.add_argument("--no-color", action="store_true", help="plain ASCII banner (no ANSI colors)")
     args = ap.parse_args()
@@ -697,14 +942,16 @@ def main() -> int:
         return cmd_menu(args)
 
     if args.verify:
-        if not args.salt or not args.expect:
-            print("need --salt and --expect with --verify", file=sys.stderr)
-            return 2
-        got = digest(args.salt, args.verify)
-        ok = secrets.compare_digest(got, args.expect.lower())
-        print("MATCH" if ok else "NO MATCH")
-        print(got)
-        return 0 if ok else 1
+        if args.salt or args.expect:
+            if not args.salt or not args.expect:
+                print("need both --salt and --expect for legacy mode", file=sys.stderr)
+                return 2
+            got = digest(args.salt, args.verify)
+            ok = secrets.compare_digest(got, args.expect.lower())
+            print("MATCH" if ok else "NO MATCH")
+            print(got)
+            return 0 if ok else 1
+        return check_code_in_files(args.verify)
     if args.issue:
         return cmd_issue(args)
     if args.revoke:
