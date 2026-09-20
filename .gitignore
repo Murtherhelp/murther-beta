@@ -2,3 +2,6 @@
 beta_codes.json
 beta_codes.tmp
 __pycache__/
+# PRIVATE SOURCE — never publish: only the obfuscated build goes to GitHub.
+# (--export still updates this local file; re-obfuscate afterwards.)
+murther.user.beta.js
