@@ -153,7 +153,7 @@ def sync_js(salt: str, active_hashes: list) -> None:
         lines.append("    \"%s\"," % h)
     lines.append("  ];")
     block = "\n".join(lines)
-    pat = re.compile(r'  var BETA_SALT = ".*?";\n  var BETA_HASHES = \[\n(?:.*?\n)*?  \];', re.DOTALL)
+    pat = re.compile(r'  var BETA_SALT = ".*?";\n  var BETA_HASHES = \[(?:[^\]]*?)\];', re.DOTALL)
     new_src, n = pat.subn(block, src, count=1)
     if n != 1:
         print("ERROR: BETA_SALT/BETA_HASHES block not found in .js — aborting.", file=sys.stderr)
@@ -187,9 +187,11 @@ def cmd_export(args) -> int:
     sync_js(salt, active)
     write_auth(salt, revoked, reg.get("min_version", "0.0.1"), len(active))
     print(f"Exported: {len(active)} active, {len(revoked)} revoked, "
-          f"salt={salt[:12]}…, min_version={reg.get('min_version')}")
-    print("Next: git add murther.user.beta.js beta_auth.json -> commit -> push.")
-    print("Revocation is live as soon as beta_auth.json is pushed (no script update needed).")
+          f"salt={salt[:12]}..., min_version={reg.get('min_version')}")
+    print("Next: re-obfuscate murther.user.beta.js -> murther.user.beta.obfuscated.js,")
+    print("then: git add murther.user.beta.obfuscated.js beta_auth.json -> commit -> push.")
+    print("(The source .js stays local/gitignored; revocation goes live once")
+    print("beta_auth.json is pushed — no script update needed for that.)")
     return 0
 
 
