@@ -1,0 +1,4 @@
+# PRIVATE — never commit: plain 6-digit codes live here.
+beta_codes.json
+beta_codes.tmp
+__pycache__/

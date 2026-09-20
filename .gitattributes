@@ -1,0 +1,3 @@
+# Keep beta files byte-stable: no line-ending conversion, so Tampermonkey
+# sees real content changes only and diffs stay clean.
+* -text
