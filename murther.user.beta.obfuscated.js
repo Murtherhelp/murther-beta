@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Murther — gota.io client (BETA) (Obfuscated)
 // @namespace    murther.gota.beta
-// @version      0.0.2
+// @version      0.0.3
 // @updateURL    https://raw.githubusercontent.com/Murtherhelp/murther-beta/main/murther.user.beta.obfuscated.js
 // @downloadURL  https://raw.githubusercontent.com/Murtherhelp/murther-beta/main/murther.user.beta.obfuscated.js
 // BETA-REL: testers must install once FROM that raw URL for Tampermonkey
