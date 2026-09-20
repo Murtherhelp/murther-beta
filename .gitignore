@@ -1,6 +1,7 @@
 # PRIVATE — never commit: plain 6-digit codes live here.
 beta_codes.json
 beta_codes.tmp
+beta_codes.txt
 __pycache__/
 # PRIVATE SOURCE — never publish: only the obfuscated build goes to GitHub.
 # (--export still updates this local file; re-obfuscate afterwards.)

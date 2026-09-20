@@ -6,9 +6,10 @@ Only salted SHA-256 hashes ever leave this PC — plain codes live only in the
 private registry file beta_codes.json (same folder, NEVER commit/publish it).
 
 Typical workflow (all from this folder):
-    python gen_beta_code.py --issue Alice        # new code for Alice, prints it once
-    python gen_beta_code.py --export             # sync .js allowlist + beta_auth.json
-    git add murther.user.beta.js beta_auth.json  # + commit + push
+    python gen_beta_code.py --issue Alice        # new code for Alice, logged in beta_codes.txt
+    python gen_beta_code.py --export             # sync .js allowlist + URLs + beta_auth.json + txt
+    # re-obfuscate source -> obfuscated build, then:
+    git add murther.user.beta.obfuscated.js beta_auth.json  # + commit + push
     # testers' Tampermonkey auto-updates the script from the raw GitHub URL,
     # and revocation below takes effect IMMEDIATELY via beta_auth.json:
     python gen_beta_code.py --revoke Alice       # or --revoke 042918 / <hash>
@@ -29,9 +30,32 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REGISTRY = HERE / "beta_codes.json"   # PRIVATE — your PC only, gitignored
-JS_FILE = HERE / "murther.user.beta.js"
+CODES_TXT = HERE / "beta_codes.txt"   # PRIVATE — plain codes, gitignored
+JS_FILE = HERE / "murther.user.beta.js"          # readable source (local only)
+OBF_FILE = HERE / "murther.user.beta.obfuscated.js"  # published build (public)
 AUTH_FILE = HERE / "beta_auth.json"   # PUBLIC — commit this (hashes only)
 SALT_BYTES = 32  # 256-bit salt, hex-encoded (64 chars)
+
+# Single source of truth for the published URLs. Both the source and the
+# obfuscated build carry the SAME @updateURL/@downloadURL (pointing at the
+# published obfuscated file), so Tampermonkey updates work no matter what.
+# --export / --sync-urls rewrite these lines in both files automatically.
+GH_USER = "Murtherhelp"
+GH_REPO = "murther-beta"
+GH_BRANCH = "main"
+PUB_FILE = "murther.user.beta.obfuscated.js"
+
+
+def raw_url(path: str) -> str:
+    return f"https://raw.githubusercontent.com/{GH_USER}/{GH_REPO}/{GH_BRANCH}/{path}"
+
+
+def update_url() -> str:
+    return raw_url(PUB_FILE)
+
+
+def auth_url() -> str:
+    return raw_url("beta_auth.json")
 
 
 def new_salt() -> str:
@@ -92,6 +116,18 @@ def find_entry(reg: dict, ident: str):
     return None
 
 
+def write_codes_txt(reg: dict) -> None:
+    """Refresh the private ledger: active (non-revoked) names + codes only."""
+    active = sorted((e for e in reg["codes"] if not e.get("revoked")),
+                    key=lambda e: e.get("name", "").lower())
+    with open(CODES_TXT, "w", encoding="utf-8") as f:
+        f.write("# Murther BETA codes — PRIVATE. Do NOT share, commit or publish.\n")
+        f.write(f"# Updated {utcnow()} — {len(active)} active code(s)."
+                " Revoked codes are NOT listed here.\n")
+        for e in active:
+            f.write(f"{e['name']}: {e['code']}\n")
+
+
 def cmd_issue(args) -> int:
     reg = load_registry()
     salt = ensure_salt(reg, args.salt)
@@ -108,8 +144,9 @@ def cmd_issue(args) -> int:
     reg["codes"].append({"name": name, "code": code, "hash": h,
                          "revoked": False, "issued_at": utcnow(), "revoked_at": ""})
     save_registry(reg)
-    print(f"Code for {name} (send privately, shown once): {code}")
-    print("Next: python gen_beta_code.py --export  ->  commit + push")
+    write_codes_txt(reg)
+    print(f"Code for {name} (send privately, also logged in beta_codes.txt): {code}")
+    print("Next: python gen_beta_code.py --export  ->  re-obfuscate  ->  commit + push")
     return 0
 
 
@@ -123,11 +160,12 @@ def cmd_revoke(args, undo: bool) -> int:
     e["revoked"] = not undo
     e["revoked_at"] = "" if undo else utcnow()
     save_registry(reg)
+    write_codes_txt(reg)
     verb = "unrevoked" if undo else "REVOKED"
-    print(f"{verb}: {e['name']} (hash {e['hash'][:12]}…)")
+    print(f"{verb}: {e['name']} (hash {e['hash'][:12]}...)")
     if not undo:
         print("This takes effect on next page visit once you --export + push beta_auth.json.")
-    print("Next: python gen_beta_code.py --export  ->  commit + push")
+    print("Next: python gen_beta_code.py --export  ->  re-obfuscate  ->  commit + push")
     return 0
 
 
@@ -146,7 +184,7 @@ def cmd_list(args) -> int:
 
 
 def sync_js(salt: str, active_hashes: list) -> None:
-    """Rewrite the BETA_SALT / BETA_HASHES block in the userscript."""
+    """Rewrite the BETA_SALT / BETA_HASHES block in the source userscript."""
     src = JS_FILE.read_text(encoding="utf-8")
     lines = ["  var BETA_SALT = \"%s\";" % salt, "  var BETA_HASHES = ["]
     for h in active_hashes:
@@ -159,6 +197,52 @@ def sync_js(salt: str, active_hashes: list) -> None:
         print("ERROR: BETA_SALT/BETA_HASHES block not found in .js — aborting.", file=sys.stderr)
         sys.exit(1)
     JS_FILE.write_text(new_src, encoding="utf-8")
+
+
+def sync_urls() -> None:
+    """Connect @updateURL/@downloadURL in BOTH files to the published build.
+
+    Only the plain-text ==UserScript== header is touched (Tampermonkey requires
+    it readable anyway), so this is safe on the obfuscated file. The obfuscated
+    BODY keeps whatever BETA_AUTH_URL was baked in at obfuscation time — that
+    one comes from the source, so re-obfuscate after source changes.
+    Returns (source_ok, obf_ok).
+    """
+    url = update_url()
+    n_ok = 0
+    for path, with_auth in ((JS_FILE, True), (OBF_FILE, False)):
+        if not path.exists():
+            print(f"skip {path.name}: file not found")
+            continue
+        src = path.read_text(encoding="utf-8")
+        head_end = src.find("==/UserScript==")
+        if head_end < 0:
+            print(f"ERROR: userscript header not found in {path.name} — skipped.", file=sys.stderr)
+            continue
+        head, tail = src[:head_end], src[head_end:]
+        head2, n1 = re.subn(r"(// @updateURL\s+)\S+", r"\g<1>" + url, head, count=1)
+        head2, n2 = re.subn(r"(// @downloadURL\s+)\S+", r"\g<1>" + url, head2, count=1)
+        if n1 != 1 or n2 != 1:
+            print(f"ERROR: @updateURL/@downloadURL lines not found in {path.name} — skipped.",
+                  file=sys.stderr)
+            continue
+        out = head2 + tail
+        if with_auth:
+            out2, na = re.subn(r'var BETA_AUTH_URL = ".*?";',
+                               f'var BETA_AUTH_URL = "{auth_url()}";', out, count=1)
+            if na != 1:
+                print(f"ERROR: BETA_AUTH_URL not found in {path.name} — skipped.", file=sys.stderr)
+                continue
+            out = out2
+        path.write_text(out, encoding="utf-8")
+        print(f"URLs synced in {path.name} -> {url}")
+        n_ok += 1
+    return n_ok
+
+
+def cmd_sync_urls(args) -> int:
+    sync_urls()
+    return 0
 
 
 def write_auth(salt: str, revoked: list, min_version: str, n_active: int) -> None:
@@ -185,23 +269,39 @@ def cmd_export(args) -> int:
     revoked = sorted(e["hash"] for e in reg["codes"] if e.get("revoked"))
     # Safety: embedded hashes must be verifiable against the registry salt.
     sync_js(salt, active)
+    sync_urls()
     write_auth(salt, revoked, reg.get("min_version", "0.0.1"), len(active))
+    write_codes_txt(reg)
     print(f"Exported: {len(active)} active, {len(revoked)} revoked, "
           f"salt={salt[:12]}..., min_version={reg.get('min_version')}")
     print("Next: re-obfuscate murther.user.beta.js -> murther.user.beta.obfuscated.js,")
     print("then: git add murther.user.beta.obfuscated.js beta_auth.json -> commit -> push.")
     print("(The source .js stays local/gitignored; revocation goes live once")
-    print("beta_auth.json is pushed — no script update needed for that.)")
+    print("beta_auth.json is pushed - no script update needed for that.)")
     return 0
 
 
-def cmd_bump(args) -> int:
-    src = JS_FILE.read_text(encoding="utf-8")
-    new_src, n = re.subn(r"(// @version\s+)[0-9][\w.\-]*", r"\g<1>" + args.bump_version.strip(), src, count=1)
+def bump_version_in(path: Path, ver: str) -> bool:
+    """Set the // @version header line. Header-only: safe on both files."""
+    src = path.read_text(encoding="utf-8")
+    new_src, n = re.subn(r"(// @version\s+)[0-9][\w.\-]*", r"\g<1>" + ver, src, count=1)
     if n != 1:
-        print("ERROR: @version header not found.", file=sys.stderr)
+        print(f"ERROR: @version header not found in {path.name}.", file=sys.stderr)
+        return False
+    path.write_text(new_src, encoding="utf-8")
+    print(f"@version {ver} set in {path.name}")
+    return True
+
+
+def cmd_bump(args) -> int:
+    ver = args.bump_version.strip()
+    ok = bump_version_in(JS_FILE, ver)
+    if OBF_FILE.exists():
+        ok = bump_version_in(OBF_FILE, ver) and ok
+    else:
+        print("note: obfuscated build not found — bumped source only; re-obfuscate to carry it over.")
+    if not ok:
         return 1
-    JS_FILE.write_text(new_src, encoding="utf-8")
     if args.min_version:
         reg = load_registry()
         reg["min_version"] = args.min_version.strip()
@@ -239,7 +339,8 @@ def main() -> int:
     ap.add_argument("--unrevoke", metavar="NAME|CODE|HASH", default="", help="restore revoked access")
     ap.add_argument("--list", action="store_true", help="list registry entries")
     ap.add_argument("--show-codes", action="store_true", help="with --list, show plain codes")
-    ap.add_argument("--export", action="store_true", help="sync .js allowlist + write beta_auth.json")
+    ap.add_argument("--export", action="store_true", help="sync .js allowlist + URLs + write beta_auth.json + codes txt")
+    ap.add_argument("--sync-urls", action="store_true", help="rewrite @updateURL/@downloadURL in both .js files")
     ap.add_argument("--bump-version", metavar="X.Y.Z", default="", help="set @version header in .js")
     ap.add_argument("--min-version", default="", help="with --export/--bump-version: oldest client allowed")
     ap.add_argument("--count", type=int, default=0, help="legacy quick-generate N codes (no registry)")
@@ -267,6 +368,8 @@ def main() -> int:
         return cmd_list(args)
     if args.bump_version:
         return cmd_bump(args)
+    if args.sync_urls:
+        return cmd_sync_urls(args)
     if args.export:
         return cmd_export(args)
     if args.count:

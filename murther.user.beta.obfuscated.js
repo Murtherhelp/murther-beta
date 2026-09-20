@@ -2,8 +2,8 @@
 // @name         Murther — gota.io client (BETA)
 // @namespace    murther.gota.beta
 // @version      0.0.1
-// @updateURL    https://raw.githubusercontent.com/REPLACE_USER/REPLACE_REPO/REPLACE_BRANCH/Murther%20Beta%20Version/murther.user.beta.js
-// @downloadURL  https://raw.githubusercontent.com/REPLACE_USER/REPLACE_REPO/REPLACE_BRANCH/Murther%20Beta%20Version/murther.user.beta.js
+// @updateURL    https://raw.githubusercontent.com/Murtherhelp/murther-beta/main/murther.user.beta.obfuscated.js
+// @downloadURL  https://raw.githubusercontent.com/Murtherhelp/murther-beta/main/murther.user.beta.obfuscated.js
 // BETA-REL: set REPLACE_USER/REPLACE_REPO/REPLACE_BRANCH to your GitHub path, then
 // testers must install once FROM that raw URL for Tampermonkey auto-update to work.
 // @description  Murther - a full UI/UX replacement client for play.gota.io: a dark purple theme and a HUD reskin that HOSTS the live native panels (stats ID/Mass/Score/Cells top-centre, FPS/ping/server above the chat, leaderboard top-right, minimap, party, chat) so everything stays synced with the game; a native-synced server list with a verified pick -> join handshake; a clean name/mass leaderboard with an animated border that highlights your own row; searchable settings, themes and a full backup; client hotkeys with live write-through rebinding, chat macros and game-side action keys; and real performance controls (FPS cap / vsync governor, renderer resolution, reduce effects). A self-healing HUD keeps it honest: a state that would leave every panel hidden is reset once, with a toast, instead of blanking the screen. Feature rows explain themselves behind their own arrow (click it) instead of on hover - a category header is the only hover description left; the number on a category header is the real count of rows it is showing; Themes opens with Enable Custom Theme, which switches the client's whole custom look off and says so; Play and Spectate wear an animated white outline; and the profile card's particle field is fitted to the real device pixels, reacts to the pointer and demotes itself when frames get slow.
